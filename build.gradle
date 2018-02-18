@@ -1,0 +1,76 @@
+task templateVersion << {
+        task ->
+        if (isDevBuild()) {
+            println "Skipping computation of template versions for dev build..."
+            return
+        }
+        println "Computing template versions..."
+        Process proc = ["java", "-cp",
+                        task.project.sourceSets.main.runtimeClasspath.asPath,
+                        "urjanet.pull.TemplateVersionUtility",
+                        "${project.projectDir}/build/classes/main/template-version.json"
+                        ].execute()
+            proc.consumeProcessErrorStream(System.err)
+            proc.consumeProcessOutputStream(System.out)
+            if (proc.waitFor() != 0) {
+                    throw new RuntimeException('exec failed');
+            }
+}
+
+jar.dependsOn templateVersion
+
+task compileSpecificFileAlone (type: JavaCompile) {
+
+    if (!project.hasProperty('filename')) {
+        println "Skipping this task.Since it belongs to XReg"
+	return;
+     } else {
+
+        String templateName="$filename";
+   	source = sourceSets.main.java.include("**/"+templateName+".java","**/intercept/**")
+	classpath = sourceSets.main.compileClasspath
+	destinationDir = sourceSets.main.output.classesDir
+     }
+}
+compileSpecificFileAlone.options.compilerArgs = ["-sourcepath", "$projectDir/src/main/java"]
+
+task packSpecificClassJar(type: Jar, dependsOn: compileSpecificFileAlone) {
+    from sourceSets.main.output.classesDir
+}
+//packSpecificClassJar.onlyIf { project.hasProperty('filename') }
+packSpecificClassJar.enabled = project.hasProperty('filename');
+
+dependencies {
+    compile 'com.urjanet.templatesdk:templatesdk:1.3.+'
+    compile 'com.urjanet.extractiondomain:domain-common:1.3.+'
+    compile 'com.urjanet.extractiondomain:domain-uds:1.3.+'
+
+    compile 'org.seleniumhq.selenium:selenium-java:2.53.0'  // Selenium templates
+    compile 'com.urjanet.thirdparty:sikuli-script:1.0'      // FlashNavigator templates
+
+    compile 'com.urjanet.thirdparty:json:1.0'               // Interceptors
+    compile 'org.slf4j:slf4j-api:1.6.2'                     // TemplateVersionUtility - not sure who else
+
+    compile 'javassist:javassist:3.12.1.GA'                 // TemplateVersionUtility
+    compile 'com.urjanet.thirdparty:reflections:0.10'       // TemplateVersionUtility - can we move that class?
+    compile 'net.sf.jopt-simple:jopt-simple:3.2'            // FlashNavigatorRunner - can we move that class?
+}
+
+task s3Publish(type: Exec, dependsOn: assemble) {
+    if (isDevBuild()) {
+        commandLine = ["echo", "Not publishing to S3 for local build"];
+        return;
+    }
+    def branch = System.getenv('GIT_BRANCH');
+    def s3Bucket = "s3://urjanet-platform-download-site";
+    def ORIGIN_PREFIX = "origin/";
+    if (!branch) {
+        throw new GradleException("Unable to determine branch for S3 publish!")
+    } else if (branch.startsWith(ORIGIN_PREFIX)) {
+        branch = branch.substring(ORIGIN_PREFIX.size());
+    }
+    String jarFile = "templates-${version}.jar"
+    commandLine = ["aws", "s3", "cp", "build/libs/" + jarFile, s3Bucket + "/templates/" + branch + "/" + jarFile]
+}
+
+publish.finalizedBy s3Publish
